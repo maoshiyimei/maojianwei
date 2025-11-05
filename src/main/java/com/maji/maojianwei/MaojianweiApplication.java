@@ -1,0 +1,17 @@
+package com.maji.maojianwei;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
+import org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration;
+import org.springframework.context.annotation.EnableAspectJAutoProxy;
+
+@SpringBootApplication(exclude = DataSourceAutoConfiguration.class)
+public class MaojianweiApplication {
+
+
+    public static void main(String[] args) {
+        SpringApplication.run(MaojianweiApplication.class, args);
+    }
+
+}
