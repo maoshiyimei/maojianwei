@@ -1,0 +1,358 @@
+内存锁： 像synchronized这类编程锁和数据库锁一样解决的是并发冲突，关注的内存数据安全，也即运行时数据安全，当然间接也会对数据库数据安全起到作用；
+JVM锁： 编程锁解决的是 “进程内（JVM 内）并发”，数据库锁解决的是 “进程间（跨 JVM / 跨服务）并发
+
+对比：
+    对比维度	    编程锁（内存锁）	        数据库锁（悲观锁 / 乐观锁）
+    作用域	    进程内（JVM 内）	        进程间（跨 JVM / 跨服务）
+    保护的数据	内存中的变量 / 对象	    数据库中的行 / 表数据
+    锁的持久化	临时的（JVM 停止则消失）	持久化的（依赖数据库事务）
+    性能	    极高（纳秒 / 微秒级）	    较低（毫秒级，涉及 IO）
+    死锁风险	    进程内死锁（易排查）	    跨服务死锁（难排查）
+    适用并发场景	单服务高并发（内存操作）	多服务并发（数据持久化）
+    典型使用方式	锁住代码块 / 方法	        锁住数据行（for update）/ 版本号
+
+锁中断：线程在「等待获取锁」的过程中，能被其他线程调用interrupt()方法打断等待状态，抛出InterruptedException，从而退出等待逻辑，执行其他代码
+        也即：等待锁的过程中可被打断，　
+
+synchronized ： 内置锁， JVM实现
+    实现： JVM 层面的监视器锁（Monitor），基于对象头的「Mark Word」实现，　Mark Word存储对象的锁状态（无锁→偏向锁→轻量级锁（轻度自旋）→重量级锁）；
+    特点：　简单，　可重入，　非公平（先到线程不一定先获取锁）性能高，　不可中断，　无法设置获取锁的超时时间－易导致死锁
+    备注：synchronized 仅在「等待锁阶段」不可中断，「持有锁执行阶段」和普通代码一样可中断、可捕获异常。
+
+ReentrantLock：　可重入显式锁
+    实现：基于AQS（抽象队列同步器）
+    特点：手动管理（LOCK　UNLOCK），　可重入，　支持公平锁（构造参数指定　new ReentrantLock(true)　），　可中断、可设置获取锁的超时时间
+    场景：精细锁控制（超时 / 中断）
+
+ReadWriteLock：　读写分离锁
+    实现：　基于 AQS 实现，把锁分为「读锁（共享锁）」和「写锁（排他锁）」
+    特点：　读写分离、可重入（读写锁均可重入），　写优先（会阻塞后续读锁）
+    场景：　读多写少，缓存读写、配置读取
+
+无锁：CAS　原子操作
+    实现：　基于CPU原语言CAS，　Compare-And-Swap，比较并交换，　当前值　＝　预期值则更新新值，　否则不更新
+    实例：　原子类AtomicInteger、AtomicLong等、分段技术LongAdder（高并发下性能更好）、原子引用AtomicReference等
+    特点：　性能很高（极高QPS下CAS不断重试性能会下降），　
+    场景：　高并发计数、状态标记等
+    LongAdder:
+        解决问题：高并发下所有线程竞争同一个volatile long变量，CAS 重试频繁，性能下降
+        实现：底层维护一个「base 变量 + cells 数组」：低并发时，直接更新 base（和 AtomicLong 一样）；高并发时，将线程哈希到不同的 cell 元素，每个线程只更新自己的 cell，避免竞争；最终求和：sum() = base + 所有cells元素的值；
+        特点：写多读少（计数频繁，求和不频繁），求和允许少量误差（sum () 是近似值，最终一致）。
+        场景：高并发计数场景（比如接口 QPS 统计、订单量统计、点击量统计）；当然需要注意
+        ｄｅｍｏ：
+        import java.util.concurrent.LongAdder;
+        import java.util.concurrent.TimeUnit;
+
+        /**
+         * 用LongAdder统计接口QPS（每秒请求数）
+         */
+        public class QpsCounter {
+            // 核心计数组件：LongAdder
+            private final LongAdder requestCounter = new LongAdder();
+            // 上一秒的计数
+            private volatile long lastSecondCount = 0;
+
+            // 记录一次请求
+            public void countRequest() {
+                requestCounter.increment(); // 原子递增，无锁
+            }
+
+            // 启动QPS统计线程（每秒打印一次）
+            public void startQpsMonitor() {
+                new Thread(() -> {
+                    while (true) {
+                        try {
+                            TimeUnit.SECONDS.sleep(1);
+                            // 求和并重置计数（sumThenReset() = 求和后清空）
+                            long currentCount = requestCounter.sumThenReset();
+                            long qps = currentCount - lastSecondCount;
+                            lastSecondCount = currentCount;
+                            System.out.println("当前QPS：" + qps);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                    }
+                }).start();
+            }
+
+            public static void main(String[] args) throws InterruptedException {
+                QpsCounter counter = new QpsCounter();
+                counter.startQpsMonitor();
+
+                // 模拟100个线程，每个线程每秒发起1000次请求
+                for (int i = 0; i < 100; i++) {
+                    new Thread(() -> {
+                        while (true) {
+                            counter.countRequest();
+                            try {
+                                TimeUnit.MICROSECONDS.sleep(1000); // 每秒1000次
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                break;
+                            }
+                        }
+                    }).start();
+                }
+
+                // 运行10秒后停止
+                TimeUnit.SECONDS.sleep(10);
+                System.exit(0);
+            }
+        }
+
+ＣＡＳ：硬件保证原子性
+    Java：　sun.misc.Unsafe类调用底层 CAS 指令
+    支持类型：
+         基础类型：int、long（Unsafe 提供compareAndSwapInt/compareAndSwapLong）；
+         引用类型：Object（Unsafe 提供compareAndSwapObject）；
+         不支持 String：因为 String 是不可变对象，修改 String 本质是创建新对象，而非修改原有值，因此 CAS 无意义。
+            当然可以通过AtomicReference<String>实现（CAS 修改引用地址）：
+            public class AtomicStringDemo {
+                private static final AtomicReference<String> atomicStr = new AtomicReference<>("初始值");
+
+                public static void main(String[] args) {
+                    // CAS更新引用（不是修改String本身，而是替换引用）
+                    boolean success = atomicStr.compareAndSet("初始值", "更新后的值");
+                    System.out.println("更新是否成功：" + success); // true
+                    System.out.println("当前值：" + atomicStr.get()); // 更新后的值
+                }
+            }
+         问题　OR　限制：
+            ABA 问题：变量被修改为 B 后又改回 A，CAS 会误判为未修改（解决方案：AtomicStampedReference，加版本号），　ABA问题：　比如链表节点的 ABA 问题会导致内存泄漏；
+            自旋开销：高并发下 CAS 重试频繁，消耗 CPU；
+            只能修改单个变量：无法实现多变量的原子更新（解决方案：锁或 AtomicReferenceFieldUpdater）。
+
+         import java.util.concurrent.atomic.AtomicStampedReference;
+
+         /**
+          * 用AtomicStampedReference解决ABA问题（版本号+值）
+          */
+         public class CasABASolution {
+             // 初始值：1，初始版本号：1
+             private static final AtomicStampedReference<Integer> atomicRef = new AtomicStampedReference<>(1, 1);
+
+             public static void main(String[] args) throws InterruptedException {
+                 // 线程1：1→2→1，版本号递增
+                 Thread t1 = new Thread(() -> {
+                     int stamp = atomicRef.getStamp(); // 获取当前版本号：1
+                     // 1→2，版本号+1（2）
+                     atomicRef.compareAndSet(1, 2, stamp, stamp + 1);
+                     stamp = atomicRef.getStamp(); // 版本号：2
+                     // 2→1，版本号+1（3）
+                     atomicRef.compareAndSet(2, 1, stamp, stamp + 1);
+                     System.out.println("线程1完成ABA操作，当前版本号：" + atomicRef.getStamp()); // 3
+                 });
+
+                 // 线程2：期望值1，版本号1→3
+                 Thread t2 = new Thread(() -> {
+                     try {
+                         Thread.sleep(100);
+                     } catch (InterruptedException e) {
+                         e.printStackTrace();
+                     }
+                     int stamp = atomicRef.getStamp(); // 版本号：3
+                     // 期望值1，版本号1 → 实际版本号3，CAS失败
+                     boolean success = atomicRef.compareAndSet(1, 3, 1, stamp + 1);
+                     System.out.println("线程2 CAS是否成功：" + success); // false
+                     System.out.println("最终值：" + atomicRef.getReference()); // 1
+                 });
+
+                 t1.start();
+                 t2.start();
+             }
+         }
+
+    import sun.misc.Unsafe;
+    import java.lang.reflect.Field;
+
+    /**
+     * 基于CAS引用更新的无锁单例模式
+     */
+    public class CasSingleton {
+        // 单例实例（volatile保证可见性）
+        private static volatile CasSingleton instance;
+        private static final Unsafe unsafe;
+        private static final long instanceOffset;
+
+        static {
+            try {
+                // 通过反射获取Unsafe实例（Unsafe不能直接new）
+                Field unsafeField = Unsafe.class.getDeclaredField("theUnsafe");
+                unsafeField.setAccessible(true);
+                unsafe = (Unsafe) unsafeField.get(null);
+
+                // 获取instance字段的内存偏移量
+                Field instanceField = CasSingleton.class.getDeclaredField("instance");
+                instanceOffset = unsafe.objectFieldOffset(instanceField);
+            } catch (Exception e) {
+                throw new Error(e);
+            }
+        }
+
+        // 私有构造方法
+        private CasSingleton() {}
+
+        // CAS原子更新单例引用
+        public static CasSingleton getInstance() {
+            if (instance == null) { // 第一次检查（避免不必要的CAS）
+                // CAS替换引用：如果instance是null，则设置为新实例
+                unsafe.compareAndSwapObject(CasSingleton.class, instanceOffset, null, new CasSingleton());
+            }
+            return instance;
+        }
+
+        public static void main(String[] args) {
+            // 多线程测试单例唯一性
+            for (int i = 0; i < 100; i++) {
+                new Thread(() -> {
+                    CasSingleton singleton = CasSingleton.getInstance();
+                    System.out.println(Thread.currentThread().getName() + ": " + singleton.hashCode());
+                }).start();
+            }
+        }
+    }
+    import java.util.concurrent.atomic.AtomicReference;
+
+    /**
+     * 基于AtomicReference的无锁单例（更简洁）
+     */
+    public class AtomicReferenceSingleton {
+        private static final AtomicReference<AtomicReferenceSingleton> instanceRef = new AtomicReference<>();
+
+        private AtomicReferenceSingleton() {}
+
+        public static AtomicReferenceSingleton getInstance() {
+            if (instanceRef.get() == null) {
+                // CAS替换引用
+                instanceRef.compareAndSet(null, new AtomicReferenceSingleton());
+            }
+            return instanceRef.get();
+        }
+
+        public static void main(String[] args) {
+            for (int i = 0; i < 100; i++) {
+                new Thread(() -> {
+                    System.out.println(getInstance().hashCode());
+                }).start();
+            }
+        }
+    }
+
+
+
+ＡＱＳ：AQS（AbstractQueuedSynchronizer）是 Java 并发包的 “基石”，ReentrantLock、ReadWriteLock、CountDownLatch 等都基于 AQS 实现。
+    核心数据结构：　volatile int state：同步状态（核心变量）　＋　双向链表（CLH 队列，　FIFO队列）：等待获取锁的线程队列，每个节点是Node类：
+        static final class Node {
+            volatile Node prev; // 前驱节点
+            volatile Node next; // 后继节点
+            volatile Thread thread; // 等待的线程
+            volatile int waitStatus; // 节点状态（CANCELLED、SIGNAL等）
+            Node nextWaiter; // 条件队列的后继节点
+        }
+    CAS：　AQS 的核心操作（如 state 的修改、队列节点的入队 / 出队）都依赖 CAS 实现：
+    两种模式：
+            独占模式：只有一个线程能获取锁（ReentrantLock）；
+            共享模式：多个线程可同时获取锁（ReadWriteLock 的读锁、CountDownLatch）。
+    获取锁：
+        public final void acquire(int arg) {
+            // 1. 尝试获取锁（子类实现tryAcquire）
+            if (!tryAcquire(arg) &&
+                // 2. 获取失败，加入等待队列
+                acquireQueued(addWaiter(Node.EXCLUSIVE), arg)) {
+                // 3. 标记线程为中断状态
+                selfInterrupt();
+            }
+        }
+
+        // 尝试获取锁（子类实现，比如ReentrantLock的非公平锁实现）
+        protected boolean tryAcquire(int acquires) {
+            final Thread current = Thread.currentThread();
+            int c = getState();
+            if (c == 0) { // 锁未被占用
+                // CAS设置state为1，获取锁
+                if (compareAndSetState(0, acquires)) {
+                    setExclusiveOwnerThread(current); // 设置独占线程
+                    return true;
+                }
+            }
+            // 可重入：当前线程已持有锁，state递增
+            else if (current == getExclusiveOwnerThread()) {
+                int nextc = c + acquires;
+                if (nextc < 0) throw new Error("Maximum lock count exceeded");
+                setState(nextc);
+                return true;
+            }
+            return false;
+        }
+
+        // 将线程加入等待队列
+        private Node addWaiter(Node mode) {
+            Node node = new Node(Thread.currentThread(), mode);
+            Node pred = tail;
+            // 快速尝试加入队尾
+            if (pred != null) {
+                node.prev = pred;
+                // CAS设置队尾
+                if (compareAndSetTail(pred, node)) {
+                    pred.next = node;
+                    return node;
+                }
+            }
+            // 快速失败，走完整入队逻辑
+            enq(node);
+            return node;
+        }
+
+        // 队列中等待锁
+        final boolean acquireQueued(final Node node, int arg) {
+            boolean failed = true;
+            try {
+                boolean interrupted = false;
+                for (;;) {
+                    final Node p = node.predecessor(); // 获取前驱节点
+                    // 前驱是头节点，再次尝试获取锁
+                    if (p == head && tryAcquire(arg)) {
+                        setHead(node); // 设置当前节点为头节点
+                        p.next = null; // 帮助GC
+                        failed = false;
+                        return interrupted;
+                    }
+                    // 调整节点状态，挂起线程
+                    if (shouldParkAfterFailedAcquire(p, node) &&
+                        parkAndCheckInterrupt()) {
+                        interrupted = true;
+                    }
+                }
+            } finally {
+                if (failed)
+                    cancelAcquire(node);
+            }
+        }
+    释放锁：
+        public final boolean release(int arg) {
+            // 1. 尝试释放锁（子类实现tryRelease）
+            if (tryRelease(arg)) {
+                Node h = head;
+                if (h != null && h.waitStatus != 0)
+                    // 2. 唤醒队列中的下一个线程
+                    unparkSuccessor(h);
+                return true;
+            }
+            return false;
+        }
+
+        // ReentrantLock的tryRelease实现
+        protected final boolean tryRelease(int releases) {
+            int c = getState() - releases;
+            if (Thread.currentThread() != getExclusiveOwnerThread())
+                throw new IllegalMonitorStateException();
+            boolean free = false;
+            if (c == 0) { // 完全释放锁
+                free = true;
+                setExclusiveOwnerThread(null);
+            }
+            setState(c); // 可重入时，state递减
+            return free;
+        }
+

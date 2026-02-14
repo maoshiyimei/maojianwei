@@ -1,0 +1,443 @@
+定义 : 分布式事务是指事务的参与者、支持事务的服务器、资源服务器以及事务管理器分别位于不同的分布式系统节点上的事务，核心目标和本地事务一致 —— 满足ACID（原子性、一致性、隔离性、持久性），
+         但因网络不可靠、节点独立故障、数据分散存储，本地事务的数据库原生保障机制失效，需要额外的设计 / 框架来实现。
+
+必要性：不是所有跨服务操作都需要分布式事务！只有当跨服务操作存在「强一致性要求」时，才需要设计分布式事务；如果是「最终一致性」即可满足的场景，简单的接口调用 + 补偿就足够。
+痛点： （1) 网络异常导致的「结果未知」，无法判断其他服务操作状态， 导致本服务无法推进；（2）自身服务异常， 导致操作半完成， 其他服务不知道，数据不一致；
+简单思路：需要代码层面上涵盖 （1）重试幂等逻辑、去重逻辑 （2）状态查询判断逻辑 （3）补偿逻辑， 如定时扫描补偿异常数据 ； 显然随着参与服务的增多， 这套保证数据正确的逻辑会非常复杂， 耦合程度也很高，维护困难；
+一致性要求： （1）强一致性：事务完成后，所有参与节点的数据立即保持一致（比如银行转账，转完账双方余额必须立即一致）；
+             （2）最终一致性，事务完成后，所有参与节点的数据可能暂时不一致，但通过「补偿操作」，最终会在一定时间内保持一致
+
+
+TCC、SAGA、2PC 等模式，本质是对这种 **「硬编码一致性」的「通用化、框架化、自动化」
+    （1）解决通用问题，避免重复造轮子：将「网络未知、节点故障、幂等重试、补偿顺序」等分布式一致性的通用问题，抽象到模式 / 框架中，开发者无需为每个业务重复开发这些逻辑；
+    （2）提升系统可用性，降低故障成本：模式 / 框架自带「故障自动感知、自动重试、自动补偿」能力，无需人工介入，在高可用要求的互联网业务中，这是核心刚需；
+    （3）平衡一致性与性能，适配不同场景：不同模式针对「一致性 / 性能 / 开发成本」做了不同权衡，让开发者可以根据业务场景选择最合适的方案，而不是只能用「硬编码补偿」这一种方式。
+
+原则：能不用就不用， 分布式事务是解决问题的方案，而非银弹，其本身会引入性能损耗、开发成本、复杂度提升的问题，因此在实际开发中，第一原则是：尽量避免分布式事务，而不是先考虑用哪种模式。
+如何避免使用：（1）服务内聚 （2)最终一致性替代强一致性：将强一致性要求的业务，改造为最终一致性要求（比如电商下单，不用保证「扣库存 + 创建订单」强一致，而是用「消息队列 + 补偿」实现最终一致）
+             (3)单数据源兜底：用一个中心化的数据源（比如 Redis / 数据库）管理跨服务的核心资源，将分布式事务转化为本地事务
+
+无论是 Seata 的 XA/TCC/SAGA，还是自研的补偿逻辑，底层都是对 “数据库本地事务” 的延伸：
+
+
+两阶段提交（2PC):  强一致性、同步、中心化
+组成：中心化的事务管理器 + 所有的参与服务节点
+过程： 管理器统一管理， 先发准备指令让各个事务准备提交， 各个事务返回准备成功或者失败， 管理器判断全部准备成功或有失败则发送提交指令或者回滚指令；
+特点： 简单（不需要再手动处理回滚），但是性能非常差， 低并发和要求强一致性的场景可以使用
+      （1）准备阶段所有参与节点的资源（数据库连接、行锁）会被长期占用，且所有操作同步等待，高并发下会严重阻塞
+      （2）单点故障：事务管理器（TM）是中心化节点，TM 宕机后，所有参与节点会处于「准备状态」，资源无法释放 （比如TM 宕机后 RM 的资源（数据库锁）会被长期占用）；
+      （3）阻塞问题：如果某个参与节点在提交阶段宕机，其他节点会一直等待，直到节点恢复，属于「宁肯阻塞，也不丢一致性」。
+代表：MySQL 的 XA 事务、Seata 的 XA 模式。
+XA：一种数据库协议
+是「实现 2PC 的工业标准协议」（由 X/Open 组织定义），规定了「事务管理器（TM）」和「资源管理器（RM，比如数据库）」之间的通信接口，是 2PC 的具体实现规范。
+
+
+
+TCC（Try-Confirm-Cancel）—— 强一致性 / 最终一致性、同步、无中心化(弱中心化）
+理解：硬编码补偿的抽象化，将每个分布式事务的参与操作，拆分为「三个幂等的方法」：Try（尝试）、Confirm（确认）、Cancel（取消），由业务开发者实现每个方法的业务逻辑，事务管理器仅负责协调方法的调用顺序。
+案例：代金券服务（1）Try（尝试）：执行预留资源， 如改成冻结状态； （2）Confirm（确认）：执行实际业务操作， 实际扣减， 这个时候应该不能有问题保证成功；（3）Cancel（取消）：执行释放预留资源的操作， 恢复可用；
+过程： 事务管理器协调调用所有事务方法的try, 都执行成功则调用confirm, 否则调用cancel
+重点：若执行过程中出现网络异常 / 服务故障，事务管理器通过定时任务重试 Confirm/Cancel，直到执行成功（保证最终一致性）。
+核心优势 （1）性能比 2PC 高：Try 阶段仅预留资源，不持有长期锁，且无中心化的强协调，同步调用的粒度更细；
+        （2）灵活性高：完全由业务开发者实现核心逻辑，适配各种复杂业务场景（比如支付、库存、订单的联动）；
+        （3）无单点故障：事务管理器仅负责协调，不存储核心数据，宕机后重启可继续协调 confirm和cancel；
+        （4）强一致性 / 最终一致性可选：同步执行 Confirm/Cancel 则为强一致性，异步执行则为最终一致性。
+缺点：需要业务开发者为每个操作实现 Try/Confirm/Cancel 三个方法，且必须保证幂等、可重试、无副作用，对开发者要求高；需要手动处理预留资源：Try 阶段的预留资源需要设计（比如代金券的冻结状态、账户的预扣金额），增加了业务表的设计复杂度。
+
+
+SAGA（事务编排）—— 最终一致性、异步、编排式 / 协同式   // 直接源自冰岛的萨迦文学（Icelandic Saga）
+核心思想：针对长事务、多服务联动的分布式场景设计，将一个分布式事务拆分为多个独立的本地事务，每个本地事务由业务服务自行执行，通过事务编排器控制本地事务的执行顺序；如果某个本地事务失败，通过反向补偿事务回滚已完成的本地事务，最终实现数据的最终一致性。
+两种实现方式
+    （1）编排式 SAGA：有一个中心化的编排器，负责控制所有本地事务的执行顺序和补偿顺序（类似导演）；
+        SAGA 的编排器（比如 Seata SAGA）支持定义复杂的流程逻辑（并行、分支、循环、条件判断），而非仅线性流程；也不是一定要回滚全部事务
+    （2）协同式 SAGA：无中心化编排器，每个服务通过事件 / 消息通知下一个服务执行，失败时自行通知前序服务进行补偿（类似演员互相配合）。
+核心优势
+    （1）性能极高：每个本地事务独立执行、独立提交，不持有跨服务的锁，异步执行时几乎不影响高并发性能；
+    （2）开发成本低：仅需实现「正向业务事务」和「反向补偿事务」，比 TCC 的 Try/Confirm/Cancel 更简单；
+    （3）适配长事务 / 多服务联动：适合跨多个服务、执行时间较长的分布式事务（比如电商下单：订单 + 库存 + 支付 + 物流）；
+    （4）高可用：单个服务故障，仅需补偿该服务的前序操作，不影响其他服务，故障恢复成本低。
+核心缺点
+    （1）仅保证最终一致性：事务执行过程中，会出现「数据暂时不一致」的状态（比如订单创建成功，代金券扣减失败，补偿前订单是已创建但券未扣），不适合强一致性要求的金融场景；
+    （2）补偿逻辑需要幂等：补偿事务必须保证幂等，防止重复补偿（比如多次回滚代金券导致券金额异常）；
+    （3）编排复杂度高：多服务联动时，编排器的流程定义会比较复杂，需要考虑各种异常场景。
+代表：Seata 的 SAGA 模式、阿里的 Sentinel+RocketMQ 实现的消息驱动 SAGA、
+
+
+案例：seata 阿里开源
+1. 环境依赖
+    微服务框架：Spring Boot 2.7.x + Spring Cloud Alibaba 2022.0.0.0
+    分布式事务：Seata 1.7.0（核心）
+    数据库：MySQL 8.0（需支持 XA）
+    注册中心：Nacos 2.2.0（微服务注册 / 配置）
+    依赖管理（pom.xml 核心依赖）：
+前提：部署独立的seala server 服务 作为事务的协调者：负责全局事务的开启 / 提交 / 回滚、事务状态管理、TCC/SAGA 的重试协调等。
+配置项： tx-service-group: my_tx_group 是 Seata 最核心的配置项，翻译为「事务分组」， 是客户端找到 Seata Server 的「桥梁」；
+发起方： 全局事务或者或事务有定有一个事务的发起方，（TM， 通过@GlobalTransactional标记全局事务）其他事务称为事务的参与方（资源方 RM）
+TCC：
+   （1）TCC接口定义：
+   @LocalTCC
+   public interface CouponTccService {
+       /**
+        * Try：冻结代金券
+        */
+       @TwoPhaseBusinessAction(name = "couponDeductTcc", commitMethod = "confirm", rollbackMethod = "cancel")
+       Boolean tryDeductCoupon(
+               @BusinessActionContextParameter(paramName = "userId") Long userId,
+               @BusinessActionContextParameter(paramName = "amount") BigDecimal amount
+       );
+
+       /**
+        * Confirm：确认扣减（冻结→已使用）
+        */
+       Boolean confirm(BusinessActionContext context);
+
+       /**
+        * Cancel：取消扣减（冻结→可用）
+        */
+       Boolean cancel(BusinessActionContext context);
+   }
+   （2）TCC接口实现
+   @Service
+   public class CouponTccServiceImpl implements CouponTccService {
+       @Autowired
+       private CouponMapper couponMapper;
+
+       @Override
+       public Boolean tryDeductCoupon(Long userId, BigDecimal amount) {
+           // Try阶段：冻结代金券（预留资源）
+           LambdaUpdateWrapper<Coupon> wrapper = new LambdaUpdateWrapper<Coupon>()
+                   .eq(Coupon::getUserId, userId)
+                   .eq(Coupon::getStatus, 0) // 可用
+                   .ge(Coupon::getAmount, amount)
+                   .set(Coupon::getStatus, 2); // 冻结
+           int rows = couponMapper.update(null, wrapper);
+           return rows > 0;
+       }
+
+       @Override
+       public Boolean confirm(BusinessActionContext context) {
+           // Confirm阶段：确认扣减（冻结→已使用）
+           Long userId = Long.parseLong(context.getActionContext("userId").toString());
+           BigDecimal amount = new BigDecimal(context.getActionContext("amount").toString());
+           LambdaUpdateWrapper<Coupon> wrapper = new LambdaUpdateWrapper<Coupon>()
+                   .eq(Coupon::getUserId, userId)
+                   .eq(Coupon::getStatus, 2) // 冻结
+                   .set(Coupon::getStatus, 1); // 已使用
+           couponMapper.update(null, wrapper);
+           return true;
+       }
+
+       @Override
+       public Boolean cancel(BusinessActionContext context) {
+           // Cancel阶段：取消扣减（冻结→可用）
+           Long userId = Long.parseLong(context.getActionContext("userId").toString());
+           BigDecimal amount = new BigDecimal(context.getActionContext("amount").toString());
+           LambdaUpdateWrapper<Coupon> wrapper = new LambdaUpdateWrapper<Coupon>()
+                   .eq(Coupon::getUserId, userId)
+                   .eq(Coupon::getStatus, 2) // 冻结
+                   .set(Coupon::getStatus, 0); // 可用
+           couponMapper.update(null, wrapper);
+           return true;
+       }
+       （3） feign
+       @FeignClient(name = "coupon-service")
+       public interface CouponTccFeignClient {
+           @PostMapping("/coupon/tcc/tryDeduct")
+           Boolean tryDeductCoupon(@RequestParam("userId") Long userId, @RequestParam("amount") BigDecimal amount);
+       }
+       (4)TCC定义：
+       @LocalTCC
+       public interface PayTccService {
+           @TwoPhaseBusinessAction(name = "payDeductTcc", commitMethod = "confirm", rollbackMethod = "cancel")
+           Boolean tryDeductBalance(
+                   @BusinessActionContextParameter(paramName = "userId") Long userId,
+                   @BusinessActionContextParameter(paramName = "amount") BigDecimal amount
+           );
+
+           Boolean confirm(BusinessActionContext context);
+
+           Boolean cancel(BusinessActionContext context);
+       }
+       （5）TCC实现
+       @Service
+       public class PayTccServiceImpl implements PayTccService {
+           @Autowired
+           private PayAccountMapper payAccountMapper;
+
+           @Override
+           public Boolean tryDeductBalance(Long userId, BigDecimal amount) {
+               // Try阶段：预扣余额（预留资源）
+               LambdaUpdateWrapper<PayAccount> wrapper = new LambdaUpdateWrapper<PayAccount>()
+                       .eq(PayAccount::getUserId, userId)
+                       .ge(PayAccount::getBalance, amount)
+                       .setSql("balance = balance - " + amount);
+               int rows = payAccountMapper.update(null, wrapper);
+               return rows > 0;
+           }
+
+           @Override
+           public Boolean confirm(BusinessActionContext context) {
+               // Confirm阶段：无需额外操作（Try阶段已扣减，仅确认）
+               return true;
+           }
+
+           @Override
+           public Boolean cancel(BusinessActionContext context) {
+               // Cancel阶段：回滚余额
+               Long userId = Long.parseLong(context.getActionContext("userId").toString());
+               BigDecimal amount = new BigDecimal(context.getActionContext("amount").toString());
+               LambdaUpdateWrapper<PayAccount> wrapper = new LambdaUpdateWrapper<PayAccount>()
+                       .eq(PayAccount::getUserId, userId)
+                       .setSql("balance = balance + " + amount);
+               payAccountMapper.update(null, wrapper);
+               return true;
+           }
+       }
+       （6）业务接口
+       @Service
+       public class PayTccBusinessService {
+           @Autowired
+           private CouponTccFeignClient couponTccFeignClient;
+           @Autowired
+           private PayTccService payTccService;
+
+           @GlobalTransactional(rollbackFor = Exception.class, mode = "TCC") // TCC模式全局事务
+           @Override
+           public Boolean pay(Long userId, BigDecimal totalAmount) {
+               // 步骤1：调用代金券服务Try阶段（冻结券）
+               BigDecimal couponAmount = new BigDecimal("10.00");
+               Boolean couponTrySuccess = couponTccFeignClient.tryDeductCoupon(userId, couponAmount);
+               if (!couponTrySuccess) {
+                   throw new RuntimeException("代金券冻结失败");
+               }
+
+               // 步骤2：计算需支付金额
+               BigDecimal payAmount = totalAmount.subtract(couponAmount);
+               if (payAmount.compareTo(BigDecimal.ZERO) < 0) {
+                   payAmount = BigDecimal.ZERO;
+               }
+
+               // 步骤3：调用支付自身Try阶段（预扣余额）
+               Boolean payTrySuccess = payTccService.tryDeductBalance(userId, payAmount);
+               if (!payTrySuccess) {
+                   throw new RuntimeException("余额预扣失败");
+               }
+
+               // 所有Try成功，Seata会自动调用Confirm；任意失败调用Cancel
+               return true;
+           }
+       }
+   }
+
+
+
+   XA: 无代码侵入， 加入@Transactional 和  @GlobalTransactional 即可
+    (1) 业务实现
+    @Service
+    @Transactional
+    public class CouponServiceImpl implements CouponService {
+        @Autowired
+        private CouponMapper couponMapper;
+
+        @Override
+        public Boolean deductCoupon(Long userId, BigDecimal amount) {
+            // 扣减代金券（XA模式下，此操作会在准备阶段执行，提交阶段确认）
+            LambdaUpdateWrapper<Coupon> wrapper = new LambdaUpdateWrapper<Coupon>()
+                    .eq(Coupon::getUserId, userId)
+                    .eq(Coupon::getStatus, 0) // 可用状态
+                    .ge(Coupon::getAmount, amount)
+                    .set(Coupon::getStatus, 1); // 改为已使用
+            int rows = couponMapper.update(null, wrapper);
+            return rows > 0;
+        }
+
+        @Override
+        public Boolean rollbackCoupon(Long userId, BigDecimal amount) {
+            LambdaUpdateWrapper<Coupon> wrapper = new LambdaUpdateWrapper<Coupon>()
+                    .eq(Coupon::getUserId, userId)
+                    .eq(Coupon::getStatus, 1) // 已使用
+                    .set(Coupon::getStatus, 0); // 改回可用
+            couponMapper.update(null, wrapper);
+            return true;
+        }
+    }
+    （2）业务代码
+    @Service
+    public class PayServiceImpl implements PayService {
+        @Autowired
+        private CouponFeignClient couponFeignClient;
+        @Autowired
+        private PayAccountMapper payAccountMapper;
+
+        /**
+         * XA模式分布式事务：扣券 + 扣余额
+         */
+        @GlobalTransactional(rollbackFor = Exception.class, mode = "XA") // 核心：XA模式全局事务
+        @Transactional
+        @Override
+        public Boolean pay(Long userId, BigDecimal totalAmount) {
+            // 步骤1：调用代金券服务扣券（假设扣10元）
+            BigDecimal couponAmount = new BigDecimal("10.00");
+            Boolean deductCouponSuccess = couponFeignClient.deductCoupon(userId, couponAmount);
+            if (!deductCouponSuccess) {
+                throw new RuntimeException("扣减代金券失败");
+            }
+
+            // 步骤2：计算需支付的剩余金额
+            BigDecimal payAmount = totalAmount.subtract(couponAmount);
+            if (payAmount.compareTo(BigDecimal.ZERO) < 0) {
+                payAmount = BigDecimal.ZERO;
+            }
+
+            // 步骤3：扣减账户余额
+            LambdaUpdateWrapper<PayAccount> wrapper = new LambdaUpdateWrapper<PayAccount>()
+                    .eq(PayAccount::getUserId, userId)
+                    .ge(PayAccount::getBalance, payAmount)
+                    .set(PayAccount::getBalance, PayAccount::getBalance, payAmount);
+            int rows = payAccountMapper.update(null, wrapper);
+            if (rows == 0) {
+                // 抛出异常，全局事务回滚（代金券会自动回滚）
+                throw new RuntimeException("账户余额不足，支付失败");
+            }
+            return true;
+        }
+    }
+
+
+SAGA:
+    (1) saga 配置
+    {
+      "name": "payCouponSaga",
+      "comment": "支付扣券SAGA流程",
+      "startState": "deductCoupon",
+      "states": [
+        {
+          "name": "deductCoupon",
+          "type": "ServiceTask",
+          "serviceName": "coupon-service",
+          "serviceMethod": "deductCoupon",
+          "parameter": {
+            "userId": "${userId}",
+            "amount": "${couponAmount}"
+          },
+          "compensateState": "rollbackCoupon"
+        },
+        {
+          "name": "deductBalance",
+          "type": "ServiceTask",
+          "serviceName": "pay-service",
+          "serviceMethod": "deductBalance",
+          "parameter": {
+            "userId": "${userId}",
+            "amount": "${payAmount}"
+          },
+          "compensateState": "rollbackBalance"
+        },
+        {
+          "name": "rollbackCoupon",
+          "type": "ServiceTask",
+          "serviceName": "coupon-service",
+          "serviceMethod": "rollbackCoupon",
+          "parameter": {
+            "userId": "${userId}",
+            "amount": "${couponAmount}"
+          }
+        },
+        {
+          "name": "rollbackBalance",
+          "type": "ServiceTask",
+          "serviceName": "pay-service",
+          "serviceMethod": "rollbackBalance",
+          "parameter": {
+            "userId": "${userId}",
+            "amount": "${payAmount}"
+          }
+        }
+      ],
+      "endState": "end",
+      "exceptionState": "exception"
+    }
+
+    （2）券接口
+    @Service
+    public class CouponSagaServiceImpl implements CouponService {
+        @Autowired
+        private CouponMapper couponMapper;
+
+        // 正向：扣减代金券
+        public Boolean deductCoupon(Long userId, BigDecimal amount) {
+            LambdaUpdateWrapper<Coupon> wrapper = new LambdaUpdateWrapper<Coupon>()
+                    .eq(Coupon::getUserId, userId)
+                    .eq(Coupon::getStatus, 0)
+                    .ge(Coupon::getAmount, amount)
+                    .set(Coupon::getStatus, 1);
+            int rows = couponMapper.update(null, wrapper);
+            return rows > 0;
+        }
+
+        // 补偿：退回代金券
+        public Boolean rollbackCoupon(Long userId, BigDecimal amount) {
+            LambdaUpdateWrapper<Coupon> wrapper = new LambdaUpdateWrapper<Coupon>()
+                    .eq(Coupon::getUserId, userId)
+                    .eq(Coupon::getStatus, 1)
+                    .set(Coupon::getStatus, 0);
+            couponMapper.update(null, wrapper);
+            return true;
+        }
+    }
+
+    （3）支付接口
+    @Service
+    public class PaySagaServiceImpl implements PayService {
+        @Autowired
+        private PayAccountMapper payAccountMapper;
+
+        // 正向：扣减余额
+        public Boolean deductBalance(Long userId, BigDecimal amount) {
+            LambdaUpdateWrapper<PayAccount> wrapper = new LambdaUpdateWrapper<PayAccount>()
+                    .eq(PayAccount::getUserId, userId)
+                    .ge(PayAccount::getBalance, amount)
+                    .setSql("balance = balance - " + amount);
+            int rows = payAccountMapper.update(null, wrapper);
+            return rows > 0;
+        }
+
+        // 补偿：退回余额
+        public Boolean rollbackBalance(Long userId, BigDecimal amount) {
+            LambdaUpdateWrapper<PayAccount> wrapper = new LambdaUpdateWrapper<PayAccount>()
+                    .eq(PayAccount::getUserId, userId)
+                    .setSql("balance = balance + " + amount);
+            payAccountMapper.update(null, wrapper);
+            return true;
+        }
+    }
+
+    (4) saga 触发
+    @Service
+    public class PaySagaBusinessService {
+        @Autowired
+        private SagaEngine sagaEngine;
+
+        public Boolean pay(Long userId, BigDecimal totalAmount) {
+            // 构建流程参数
+            Map<String, Object> params = new HashMap<>();
+            params.put("userId", userId);
+            params.put("couponAmount", new BigDecimal("10.00"));
+            params.put("payAmount", totalAmount.subtract(new BigDecimal("10.00")));
+
+            // 触发SAGA流程
+            SagaStartArgs startArgs = new SagaStartArgs();
+            startArgs.setSagaJson("saga/pay_coupon_saga.json"); // 流程文件路径
+            startArgs.setBusinessKey(userId.toString()); // 业务唯一标识
+            startArgs.setParams(params);
+
+            // 执行SAGA流程：先执行deductCoupon→deductBalance，任意失败触发补偿
+            SagaResult result = sagaEngine.start(startArgs);
+            return result.isSuccess();
+        }
+    }
+备注：SAGA 把分布式事务拆分为多个独立提交的本地事务，每个本地事务执行后立即提交，不持有跨服务锁， 所以上面业务接口没有使用@Transational也是可以的， 只要本地确保原子执行就行了， saga只是保证所有事务方法的一致；
+SAGA 不需要@Transactional（可选）或@GlobalTransactional（不需要）来标记事务，而是通过以下方式管理：
+核心功能是：协调补偿流程
+
+
