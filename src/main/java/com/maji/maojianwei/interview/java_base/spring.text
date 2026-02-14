@@ -1,0 +1,202 @@
+Spring 简介：
+    （1）一个开源的Java EE开发框架，它提供了一种全面的解决方案，用于构建企业级应用程序。
+    （2）Spring框架的设计理念是基于面向对象的编程思想和松耦合的架构原则，旨在简化Java应用程序的开发，并提供可扩展性和灵活性。
+    （3）分层清晰，从上到下可以分成：
+            （1）数据处理集成模块： ORM、JDBC、事务
+            （2）Web模块：servlet、web socket、 web
+            （3）Aop/Aspect模块
+            （4）Core Container模块：beans、context、core、SP Expression language
+            （5）Test模块
+    （4）核心功能：
+            （1）控制反转
+            （2）依赖注入
+            （3）面向切面编程
+            （4）组件化开发
+            （5）容器管理（ApplicationContext）
+            （6）集成支持：与第三方库的集成
+
+
+控制反转（IoC）：
+        （1）作用：对象的创建和管理交给框架来完成，开发人员只需关注业务逻辑的实现。这种解耦的设计模式可以降低组件之间的耦合度，提高代码的可维护性和可测试性。
+        （2）基本工厂接口：BeanFactory， 顶层接口实现对象的创建， 几个重要的实现：
+                ListableBeanFactory
+                ApplicationContext：配置文件加载对象创建容器
+                AnnotationConfigApplicationContext: 注解方式申请的对象创建容器
+        （3）ApplicationContext不仅实现了BeanFactory( DefaultListableBeanFactory )， 还实现了接口：
+                MessageSource： 消息资源接口， 提供国际化的标准访问接口
+                ResourceLoader ：资源加载
+                ApplicationEventPublisher： 事件发布器接口
+            核心方法是refresh(), 该方法的主要流程（加锁）：
+                 https://it-blog-cn.com/blogs/spring/ioc.html#spring-ioc-%E5%AE%B9%E5%99%A8%E6%BA%90%E7%A0%81%E6%80%BB%E7%BB%93
+
+                （1）启动准备：prepareFresh()
+                （2）获取bean工厂并准备：obtainFreshBeanFactory（）、prepareBeanFactory，比如设置BeanPostProcessor，初始化一些bean
+                （3）BeanFactory 后置处理阶段：postProcessBeanFactory
+                （4）BeanFactory 注册 BeanPostProcessor 阶段
+                （5）初始化MessageResource对象
+                （6）初始化和事件广播器（事件派发器）：ApplicationEventMulticaster
+                （7）应用上下文刷新扩展阶段：onRefresh,子类重写可以自定义逻辑
+                （8）事件监听器注册阶段：registerListeners
+                （9）BeanFactory 初始化完成阶段：finishBeanFactoryInitialization
+                （10）应用上下文刷新完成阶段：finishRefresh
+
+
+
+
+
+
+依赖注入（DI）：实际上是控制反准的具体实现， 指 Spring创建对象的过程中，将对象依赖属性通过配置进行注入， 注入的方式右三种
+    （1）属性注入：@Autowired（spring注解） 或者 @Resource（来自于JDK注解，只能用于属性和setter注入， 先根据名称查找再根据类型查找，前者相反）
+        简单，但是有可能出现滥用导致类的职责复杂，且没有办法注入final修饰的变量，通用性不好
+    （2）setter注入：公共的setter方法注入
+        一定程度上可以解决循环依赖的问题， 不可以注入不可变对象， 并且可以被修改
+    （3）构造方法注入：推荐，通用性更好，可以注入不可变对象，也不会被修改。
+
+
+循环依赖的问题: 可以通过 allow-circular-reference 属性配置
+    （1）三级缓存机制避免： 注意spring中避免的是单例类型的bean的循环依赖， 并且是通过属性或者setter方法注入所依赖的bean，其他情况下没有办法解决
+
+            （1）一级缓存： singletonObjects ，保存实例化、注入、初始化完成的bean实例
+            （2）二级缓存：earlySingletonObjects， 保存实例化完成的bean实例
+            （3）三级缓存： singletonFactories ，保存bean的创建工厂
+            先从一级查找对象， 二级查找， 再到三级查找（getObject),找到以后升级到二级缓存，创建的时候如果没有则提前暴漏自己放在三级缓存中（putObject）
+
+    （2）开发设计中需要避免：
+        构造函数注入、使用延迟依赖注入
+
+
+
+
+
+
+
+
+
+Spring bean作用域： 通过scope属性进行配置
+    【1】singleton：该属性在 IOC容器仅创建一个 Bean实例（单例），IOC容器每次返回的是同一个Bean实例。
+        默认配置
+        通过getBean(id)获取的是同一个实例（ConfigurableApplicationContext ）
+        容器对象创建的时候就会生成单例的实例对象
+
+    【2】prototype：该属性在 IOC容器可以创建多个 Bean实例，每次返回的都是一个新的实例。
+        在getBean的时候才会生成实例对象
+
+    【3】request：该属性仅对 HTTP请求产生作用，HTTP请求每次都会创建一个新的Bean，适用于WebApplicationContext 环境。
+        仅作用在WebApplicationContext环境
+
+    【4】session： 该属性仅用于 HTTP Session，同一个 Session共享一个 Bean实例。不同 Session使用不同的实例。
+        仅作用在WebApplicationContext环境
+
+    【5】global-session： 该属性仅用于HTTP Session，同 session作用域不同的是，所有的 Session共享一个 Bean实例。
+
+
+Spring bean的生命周期：
+    （1）普通new对象有GC回收，而由 Spring IoC容器托管的对象，它们的生命周期完全由容器控制
+    （2）配置的时候可以通过init-method和destroy-method属性定义初始化和销毁方法
+    （3）单实例：容器启动——>初始化方法——>（容器关闭）销毁方法
+    （4）多实例：容器启动——>调用bean——>初始化方法——>容器关闭（销毁方法不执行）
+    （5）具体流程：bean的管理是基于配置文件解析的BeanDefinition进行的
+            （1）实例化：
+                BeanFactory：       请求bean时调用createBean创建
+                ApplicationContext：容器启动后就根据配置创建，包装在BeanWrapper（提供属性设置的接口， 提供统一的 get及 set方法）， 这时对象是一个空对象
+            （2）设置对象属性（依赖注入
+                根据BeanDefinition信息， 使用BeanWrapper中接口进行依赖注入
+            （3）bean初始化
+                如果配置了BeanPostProcessor还会执行前置方法
+                initializeBean方法
+                如果配置了init-method还会执行自定义初始化方法（底层还是调用initializeBean方法）
+                如果配置了BeanPostProcessor还会执行后置方法
+            （4）bean的销毁
+
+
+
+AOP： Spring提供了面向切面编程的支持，可以将横切关注点（如事务管理、安全性等）从业务逻辑中分离出来，以提高代码的模块化和重用性。
+    （1）面向对象编程思想的一种补充， 可以在不修改原代码的前提下，动态统一额外添加功能的技术， 拦截某个方法，做增强，
+    （2）实现业务代码和非业务代码的分离，横向抽取取代了传统纵向继承， 避免了重复代码
+    （3）应用场景：事务管理、日志管理、异常处理、权限控制、性能监控等
+    （4）概念：
+            连接点：join point，目标方法
+            切入点：point cut，
+            通知： advice， 拦截到切入点之后做的事情（增强的功能)
+                    （1）Before: 通知方法再目标方法之前执行
+                    （2）after
+                    （3）after returning
+
+                    （4）after throwing
+                    （5）around, 通知方法将目标方法包围起来
+            目标： target，被代理的目标对象
+            weaving： 织入，将增强代码作用与目标上生成代理对象， 切入时期是在运行中的某个时期
+            代理： proxy,代理对象
+            切面： aspect， 切入点和通知的结合
+    （5）使用流程：
+            （1）spring自带：
+                        （1）定义普通（公用）业务组件， 配置bean
+                        （2）配置切入点bean：可以使用正则表达式
+                        （3）配置通知bean， advisor
+                        （4）创建自动代理
+            （2）AspectJ
+
+            （3）注解
+
+
+
+
+Spring事务管理
+    （1）作用: 屏蔽不同数据库访问技术的事务处理方法和事务传播方法
+    （2）事务管理的两种方式
+            Spring事务注解 @transactional
+            AspectJ的AOP配置
+    （3）事务传播：间单来说就是事务是手动提交还是自动提交，事务什么时候开始，什么时候提交，事务传播是定义在方法上的
+        （1）PROPAGATION_REQUIRED： 当前方法需要运行在一个事务中，如果已经右事务则在同一个事务中进行， 否则新建一个事务
+        （2）PROPAGATION_SUPPORTS： 当前方法支持事务上下文， 如果已经右事务则在同一个事务中进行
+        （3）PROPAGATION_REQUIRES_NEW： 需要使用 JTATransactionManager 作为事务管理器，它会开启一个新的事务。如果一个事务已经存在，则先将这个存在的事务挂起
+            内层事务与外层事务就像两个独立的事务一样，一旦内层事务进行了提交后，外层事务不能对其进行回滚
+        （4）PROPAGATION_NESTED： 如果一个活动的事务存在，则运行在一个嵌套的事务中。 如果没有活动事务，则按REQUIRED 属性执行。
+            外层事务的回滚可以引起内层事务的回滚。而内层事务的异常并不会导致外层事务的回滚，它是一个真正的嵌套事务。
+        （5）PROPAGATION_NEVER： 总是非事务地执行，如果存在一个活动事务，则抛出异常
+        （6）PROPAGATION_MANDATORY： 如果已经存在一个事务，支持当前事务。如果没有一个活动的事务，则抛出异常。
+        。。。
+
+    （4）隔离级别：和数据库一样有默认和其他四种
+
+    （5）主要管理接口
+            （1）PlatformTransactionManager：
+                提供commit、rollback、getTransaction方法
+            （2）TransactionDefinition
+                定义事务信息：提供getIsolationLevel、getPropagationBehavior、isReadOnly等方法
+            （3）TransactionStatus
+                维护事务运行状态，提供isCompleted、hasSavepoint、isNewTransaction等方法
+
+SpringBoot
+    （1）特点：
+        【1】创建独立的 Spring 应用，可以通过 java -jar xx.jar 直接运行；
+        【2】直接嵌入 Tomcat、Jetty或Undertow 等 Web 容器（不需要部署 war 文件），后期与云计算平台集成方便（docket）；
+        【3】提供固化的 “starter” 的 pom 配置简化构建 maven 配置，避免大量的 Maven导入和各种版本冲突；
+        【4】当条件满足时自动装配 Spring 或第三方类库；
+        【5】提供运维特性，基于 ssh、http、telnet 对服务器进行监控、健康检查以及外部化配置；
+        【6】SpringBoot 不需要 XML 配置，也不是通过代码生成来实现，而是通过条件注解+类实现配置文件；
+        【7】基于环境的配置使用这些属性，您可以将您正在使用的环境传递到应用程序：-Dspring.profiles.active = {enviornment}。在加载主应用程序属性文件后，Spring 将在（application{environment}.properties）中加载后续的应用程序属性文件；
+    （2）Spring改进：
+            （1）对依赖进行了进一步封装（starter），我们只需要根据场景依赖 starter 即可。在进行构建期间，所有其他依赖项将自动添加到项目中
+                例如创建一个web应用原来需要导入spring-web、spring-webmvc, 现在只需要一个springboot-starter-web
+            （2）默认使用内嵌web服务器运行，
+    （3）核心配置文件：
+        （1）bootstrap.properties或者yaml:
+        （2）application.properties或者yaml:
+    （4）核心注解：@SpringBootApplication
+        启动类上，复合了@Configuration、EnableAutoConfiguration（自动配置）、ComponentScan
+
+Spring Cloud: 云应用开发工具
+    Spring Cloud 基于Spring Boot，为微服务体系开发中的架构问题，提供了一整套的解决方案——服务注册与发现，服务消费，服务保护与熔断，网关，分布式调用追踪，分布式配置管理等。
+
+
+SpringMVC
+
+
+
+
+
+
+
+
+

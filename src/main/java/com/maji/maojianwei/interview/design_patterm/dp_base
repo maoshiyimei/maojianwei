@@ -1,0 +1,506 @@
+设计原则： 高内聚 & 低耦合 & 易扩展 & 复用
+    （1）单一职责原则
+    （2）接口隔离原则：
+        不需要的接口或方法需要拆分， 接口粒度小， 高内聚，更加灵活
+    （3）依赖倒置原则：  面向接口编程， 更加稳定
+        程序要依赖于抽象接口，不要依赖于具体实现。简单的说就是要求对抽象进行编程，不要对实现进行编程，这样就降低了客户与实现模块间的耦合。
+        具体来讲：
+            （1）：高层模块不依赖底层模块， 两者都应该依赖抽象（接口）
+            （2）抽象不依赖细节（实现）， 细节依赖于抽象
+            （3）核心是面向接口编程
+            （4）相应的在编程中更多的会有【依赖传递】而非【参数传递】
+        依赖传递可以通过
+            （1）接口传递（接口参数）： 抽象依赖抽象
+            （2）构造方法传递（接口成员）
+            （3）setter传递（set成员）
+    （4）里氏替换原则：子类不要去重写父类的方法， 不要破坏继承体系
+        所有引用基类的地方必须能透明地使用其子类的对象，子类可以扩展父类的功能，但不能改变父类原有的功能
+        遵循这个规范是为了避免修改父类导致子类故障
+        继承关系中：基类和子类的耦合性强
+
+    （5）开闭原则： 非常核心
+         一个软件实体如类、模块和函数应该对扩展开放，对修改关闭。模块应尽量在不修改原代码的情况下进行扩展
+         所以在最开始设计的时候就要做好抽象， 利于扩展
+    （6）迪米特法则： 最少知识准则
+        一个软件实体应尽可能少地与其他实体发生相互作用
+        尽量降低耦合！
+        仅与直接的朋友通信， 陌生的类最好不要以局部变量的形式出现在类的内部！！不是我需要了解的事情， 这是你的事情不要暴露给我， 减少耦合
+    （7）合成复用原则：has-A & is_A
+        尽量使用合成/聚合的方法，而不是使用继承。因为继承会带来扩展和维护的困难
+        -》聚合用来表示“拥有”关系或者整体与部分的关系， （部分的生命周期可以超越整体）
+        -》合成用来表示一种强得多的“拥有”关系： 在一个合成关系里，部分和整体的生命周期是一样的。一个合成的新对象完全拥有对其组成部分的支配权，包括它们的创建和湮灭等
+
+
+创建型：
+    （1）单例模式：
+        保证在整个应用程序的生命周期中，任何时刻，单例类的实例都最多只存在一个
+        实例化由自行进行
+        实现方式：
+            （1）静态常量：类加载的时候就实例化，不符合懒加载的思想造成内存浪费，但是好处是没有多线程同步的问题
+                private Demo(){};
+                private static Demo demo = new Demo();
+                public static Demo GetDemo(){ return demo};
+            （2）静态代码块：同上
+                private Demo(){};
+                private static Demo demo；
+                static{
+                    demo = new Demo();
+                }
+                public static Demo GetDemo(){ return demo};
+            （3）懒加载： 线程不安全, 不使用
+                private Demo(){};
+                private static Demo demo;
+                public static Demo GetDemo(){
+                    if (demo == null){
+                        demo = new Demo();
+                    }
+                    return demo
+                };
+            （4）懒加载： 线程安全，但是效率低，也不使用
+                private Demo(){};
+                private static Demo demo;
+                public static synchronized Demo GetDemo(){
+                    if (demo == null){
+                       demo = new Demo();
+                    }
+                    return demo
+                };
+            （5）懒加载： 本质上仍然线程不安全同3， 不使用
+                private Demo(){};
+                private static Demo demo;
+                public static Demo GetDemo(){
+                    if (demo == null){
+                        synchronized(Demo.class){
+                            demo = new Demo();
+                        }
+                    }
+                    return demo
+                };
+            （6）懒加载： 双重检查，推荐
+                private Demo(){};
+                private static volatile Demo demo;
+                public static Demo GetDemo(){
+                      if (demo == null){
+                        synchronized(Demo.class){
+                            if (demo == null {
+                                demo = new Demo();
+                            }
+                        }
+                }
+                return demo
+                };
+                这里需要使用volatile的原因是：（作用是禁止指令重排序和并发可见行）
+                    demo = new Demo();不是原子操作， 先分配内存返回引用，然后初始化对象内容， 所以有可能其他线程获得半成品
+
+            （7）静态内部类：懒加载， 线程安全推荐
+                静态内部类只在第一次加载类的时候初始化，JVM保证了线程安全
+                private Demo(){};
+                private static class SingleDemoInstance{
+                    private static final Demo DEMOINSTANCE = new Demo();
+                }
+                public static Demo GetDemo(){
+                    return SingleDemoInstance.DEMOINSTANCE;
+                }
+            (8) 枚举方法：推荐, 直接调用只有一个枚举实例的枚举方法，简单， 还能防止反序列化重新创建新的对象
+                public enum Demo {
+                    INSTANCE;
+
+                    public void do(){};
+                }
+        使用场景：资源共享 & 资源控制 & 频繁使用 （避免频繁的创建和销毁）
+            windows的任务管理器、回收站
+            应用的日志应用、配置对象、数据库连接池、线程池
+
+   （2） 工厂模式：一种创建多种不同类别对象的最佳方式， 具体创建逻辑对应用隐藏，相对于new， 扩展性很高
+        问题：但是不可否认这也会增加系统的复杂性，当增加新的对象类别时，除了增加新的产品类， 还要对工厂类进行修改（违反开闭原则）
+        简单工厂模式：简单工厂模式定义了一个创建对象的类，由这个工厂类来封装实例化对象的行为
+        抽象工厂模式：当创建逻辑复杂以后， 可以进一步抽象工厂， 这样不同的工厂实现可以完成不同产品的生产， 可以进一步方便扩展，也可以改善简单工厂模式的修改问题。
+
+   （3）代理模式：当无法直接访问某个对象，或者为了数据安全考虑不能直接访问这个对象的时候， 需要引入代理对象帮忙访问目标对象
+        好处：
+            （1）代理对象起到中介作用，也可以保护目标对象
+            （2）代理对象可以对目标对象的功能进行简化或扩展
+            （3）代理对象可以实现一定的系统解耦
+        坏处：
+            （1）增加了系统复杂度， 目标对象修改相应的代理对象也需要调整
+            （2）降低了处理速度
+        代理模式的三种方式：
+            （1）静态代理：
+                代理类需要「实现目标类的方法」，并且维护一个目标对象的实例（可以视为一种聚合）， 通过调用目标对象的同一方法来向外提供服务， 同时可以对服务进行控制和扩展。
+                不足：
+                    每一个类的代理都需要单独创建代理类，每一个方法否需要重复实现， 开发较为复杂。
+            （2）动态代理：又叫接口代理或者JDK代理， 想法是希望用一个代理类来代理任何对象，任何方法
+                代理类不需要实现目标类的方法或接口，但是目标对象需要实现接口， 代理对象是利用JDK中的API在内存中动态创建的（利用反射动态生成代理类，动态编译、加载到内存）
+                在： java.lang.reflect.Proxy
+                    static Object newProxyInstance(ClassLoader loader, Class<?>[] interfaces,InvocationHandler h )
+                    其中 newProxyInstance用于生成代理类， InvocationHandler：这个接口主要用于「自定义代理的逻辑处理」， 需要实现其中的invoke()方法， 方法返回和指定方法的返回参数类型一致！
+                        public Object invoke(Object proxy, Method method, Object[] args) throws Throwable
+                    这个invoke方法里面会调用指定方法的invoke方法；
+
+                这个代理类是以&Proxy开头的， 并且继承自Proxy类， 因此不能再继承其他接口， 需要目标对象一定有接口实现， 然后实现目标对象的接口方法。
+
+                使用方法流程：
+                    （1）创建目标对象的实例
+                    （2）自定义代理逻辑处理handler： invocationHandler实现
+                    （3）调用方法回去代理实例 newProxyInstance（类型为目标对象接口）：instance
+                    （4）instance调用具体方法
+
+                使用场景：
+                    Spring AOP
+                    RPC调用
+                    缓存代理：
+                    测试框架的后端mock
+                    java注解对象的获取
+            （3）Cglib代理：CGLIB是一个代码生成包
+                如果目标对象没有实现接口， 可以使用， 也可以视为一种动态代理， 是通过在内存中动态生成目标类的一个子类来实现代理的
+                底层是通过使用字节码处理框架 ASM 来转换字节码并生成新的类
+                注意： 代理的类不能是final的，目标方法也不能使用 final/static 修饰，否则不会被拦截，即不会执行
+
+                原理： 子类中通过方法拦截来拦截父类的调用， 同时加入横切逻辑（代理逻辑）
+                （1）需要实现拦截器MethodInterceptor的intercept()方法， 并提供一个代理对象返回方法：getProxyInstall() 可自行定义
+                    public Object intercept(Object obj, Method method, Object[] params,MethodProxy proxy) throws Throwable
+                    参数含义： 代理类实例、方法引用、方法参数、生成的代理类对方法的代理引用
+                    这个proxy调用invokeSuper方法来调用目标独享中对应的方法
+                 （2）利用字节码增强器来进行扩展：
+                    public static void main(String args[]) {
+                            Enhancer enhancer =new Enhancer();
+                            //设置父类
+                            enhancer.setSuperclass(TargetObject.class);
+                            //设置方法拦截器
+                            enhancer.setCallback(new TargetInterceptor());
+                            TargetObject targetObject2=(TargetObject)enhancer.create();
+                            System.out.println(targetObject2);
+                            System.out.println(targetObject2.method1("mmm1"));
+                            System.out.println(targetObject2.method2(100));
+                            System.out.println(targetObject2.method3(200));
+                        }
+   （4）建造者模式
+
+
+   （5）模版模式（行为型）：在一个抽象类公开定义了执行此方法的模板。它的子类可以按照需要重写方法实现
+        封装了不变的算法， 可变部分交由子类实现
+        主要是为了代码复用， 为了固定流程操作以防篡改， 一般「模板方法」上都加有 final 关键字
+        主要角色：
+            （1）抽象类： 给出总体轮廓， 包括一个模版方法、若干基本方法（可以是抽象方法、具体方法或者钩子方法）
+            （2）具体子类： 实现抽象类中所定义的抽象方法和钩子方法
+        case：
+            public abstract class AbstractHospital {
+                //流程 模版方法
+                public final void procedure() {
+                    //1、挂号
+                    this.regiest();
+                    //2、排队
+                    this.queue();
+                    //3、看病
+                    this.treat();
+                    //4、取药，有点人不用开药，只是小事
+                    if(isRecipe()) {
+                        this.recipe();
+                    }
+                }
+                //挂号
+                public String regiest() {
+                    String regiest = "你的订单号为"+((int) (Math.random()*10));
+                    System.out.println(regiest);
+                    return regiest;
+                }
+                //排队
+                public void queue() {
+                    System.out.println("排队中。。。。");
+                }
+                //看病
+                public abstract String  treat();
+                //取药
+                public abstract String recipe();
+
+                //钩子方法
+                boolean isRecipe() {
+                    return true;
+                }
+            }
+
+            子类：
+            public class Patient_A extends AbstractHospital{
+                @Override
+                public String treat() {
+                    String treat = "胃病";
+                    System.out.println("你的病为"+treat);
+                    return treat;
+                }
+                @Override
+                public String recipe() {
+                    String recipe = "健胃消食片";
+                    System.out.println("药单："+recipe);
+                    return recipe;
+                }
+
+                //重写钩子方法
+                @Override
+                boolean isRecipe() {
+                    return false;
+                }
+            }
+
+        使用场景：
+            （1）Spring IOC容器初始化的时候用到了模版方法
+                    抽象类，AbstractApplicationContext， 实现接口ConfigurableApplicationContext， 包含模版方法：refresh, 已实现的父类方法initMessageSource， 抽象方法refreshBeanFactory， 钩子方法onRefresh等。
+
+   （6）迭代器模式（行为型）
+            在包含聚合类对象的时候（比如数组和map）， 访问和遍历进行分开， 使用专门的迭代器来进行遍历操作， 符合单一职责原则（迭代器只有一个作用）和开闭原则
+            比如 Java 中的 Collection、List、Set、Map 等都包含迭代器（ next()、hasNext() )
+            问题： 复杂性增加
+            结构： 包含聚合和迭代器的两个抽象和各自实现
+
+
+   （7）访问者模式（行为型）:Visitor Pattern
+
+   (8) 观察者模式（对象行为型）：当对象之间行为存在关联时， 也即一个对象的行为变化会影响另外一个对象， 这个时候适用
+        定义：
+            定义对象之间的一对多的依赖关系， 当一个对象状态发生变化时， 其关联依赖的对象能被通知并且做出修改操作
+            又叫 发布订阅模式
+        说明： 模式本事没有申明通知观察者这一事件是怎么触发的
+        问题：当观察者较多的时候， 通知会成为性能影响的重点（可以考虑使用MQ消息来进一步结耦）
+
+        主要角色：
+            （1）主题抽象： 被观察者的抽象， 包含观察者集合（列表），观察者增加、删除的方法， 通知观察者的方法
+            （2）具体主题
+            （3）观察者抽象： 被观察调用的更新方法（响应方法）
+            （4）观具体察者
+        使用场景：
+            （1）JDK中java.util包中提供了： 提供了 Observable 类以及 Observer 接口，分别是悲观察者和观察者的抽象；
+            （2）Spring ApplicationContext 事件机制中的观察者模式： https://juejin.cn/post/6844903697781096455
+                ApplicationContext 中事件处理是由 ApplicationEvent 类和 ApplicationListener 接口来提供的。
+                如果一个Bean实现了 ApplicationListener 接口，并且已经发布到容器中去，每次 ApplicationContext 发布一个 ApplicationEvent 事件，这个Bean就会接到通知
+   （9）外观者模式（Facade Pattern， 结构型）
+        面对复杂系统， 隐藏内部细节，对外提供一个统一的访问接口，简化访问操作，降低客户端和内部系统的耦合
+
+
+
+   （10）原型模式（创建型）：
+        定义： 在需要创建重复对象的时候，提供一种简单的方式，通过原型接口， 创建当前对象的克隆，
+        使用： JAVA中Object是所有类的根类，提供了clone方法， 不过要求需要拷贝的类实现cloneable接口（改接口没有方法只是一个标志）
+        注意： 默认clone是浅拷贝（ super.clone() )
+        实现深拷贝：
+            （1）第一种是重写 clone 方法来实现深拷贝： 比如又一个成员是引用类型的， 可以继续调用改成员的clone方法
+            （2）第二种是通过序列化实现深拷贝：
+                public class DeepClone implements Serializable{
+                	/**
+                	 * 序列化 ID
+                	 */
+                	private static final long serialVersionUID = 1L;
+                	//数据类型  略。。。。
+                	//重写clone方法，调用引用类型的克隆方法
+                	protected Object deepClone(){
+                		ByteArrayOutputStream BOStream = null;
+                		ObjectOutputStream OOSream = null;
+                		ByteArrayInputStream BIStream = null;
+                		ObjectInputStream OIStream =null;
+                		try {
+                			//序列化
+                			BOStream = new ByteArrayOutputStream();
+                			OOSream = new ObjectOutputStream(BOStream);
+                			//将当前对象写入流中
+                			OOSream.writeObject(this);
+
+                			//反序列化
+                			BIStream = new ByteArrayInputStream(BOStream.toByteArray());
+                			OIStream = new ObjectInputStream(BIStream);
+                			DeepClone deepClone = (DeepClone) OIStream.readObject();
+                			return deepClone;
+                		} catch (Exception e) {
+                			e.printStackTrace();
+                			return null;
+                		}finally {
+                			try {
+                				BOStream.close();
+                				OOSream.close();
+                				BIStream.close();
+                				OIStream.close();
+                			} catch (Exception e2) {
+                				e2.printStackTrace();
+                			}
+                		}
+                	}
+                }
+
+
+
+   （11）享元模式：Flyweight Pattern：
+        定义：运用共享技术有效地支持大量细粒度对象， 当需要创建大量相似的对象，可以将相似或者共有部分抽取出来， 以减少对象的创建
+        节约内存资源
+        关键设计点：
+            用 HashMap 存储对象，key 表示唯一标识，value 为共享对象， 如果标识存在则返回对应对象，不需要重新创建
+        应用场景：
+            经典的应用的场景就是池技术，String 常量池、数据库连接池、缓冲池等等都是享元模式的应用
+        主要角色：
+            （1）享元抽象：公共方法（非享元的外部状态以参数形式传入）
+            （2）具体享元：
+            （3）非享元抽象（具体）：不可以共享的外部状态
+            （4）享元工厂：创建和管理享元（池子）
+
+   （12）组合模式：Composite Pattern， 结构型模式， 部分与整体
+        定义： 允许以相同的方式处理单个对象和对象的组合体
+            当对象存在树形结构的时候， 比如文件、组织架构等， 叶子节点和非叶子节点可以使用相同的抽象
+        主要角色：
+            （1） Component： 对象和对象组合都需遵循的抽象
+            （2） Composite:  对象组合， 包含对象集合成员，
+        注意：
+            如果对象和组合完全一样的接口方法，称为透明模式，
+            透明方式将所有对外操作都放在Component，叶子节点也得提供这些接口（虽然它实际上不支持这些操作）。
+
+            而安全方式只将叶子节点与组合对象同时提供的操作放在Component
+
+   （13）桥接模式： Bridge 结构型
+       场景：
+            当有些对象具有两个或多个维度的变化，且这些维度相互独立， 如果使用多层继承的方式实现子类， 将需要很多的子类（类爆炸）， 并且扩展也不太方便可以使用桥接模式
+       定义：
+            将这些变化维度分成两部分： 「实现部分」和「抽象部分」， 实现部分在抽象部分进行聚合
+       案例分析： 比如咖啡下单， 有两个维度， （1）加糖加奶 （2） 中杯大杯
+            （1）将辅料作为实现对象， 咖啡本身容量作为抽象部分
+            （2）辅料这边定义一个接口， 可以扩展不同辅料
+            （3）抽象这边引用一个辅料对象成员， 同时完成咖啡下单的方法， 具体可以实现两个子类（中杯咖啡 & 大杯咖啡）
+            这样的好处是如果容量增加了只要增加咖啡子类就可以了， 而使用多层继承的话除了咖啡、大杯咖啡、小杯咖啡这三个抽象类外， 还需要大杯加糖、大杯加奶等四个总共7个类， 以后增加调整也较为复杂
+            如果再继续增加维度比如冷热， 可以也作为实现部分的维度，聚合进抽象部分
+
+       特点：
+            维度之间适当结耦了，
+            可以减少子类的数量。
+
+   （14）装饰器模式：结构型
+        给某类产品动态增加新的功能， 可以不改变对象的架构，而仅仅是在其功能基础上作指定扩展， 是替代继承的一种设计模式；
+        要求：
+            （1）被装饰者和装饰器实现相同接口
+            （2）装饰器中包含被装饰者的引用
+        应用场景：
+            JDK中的流：
+                （1）FileInputStream是一个被装饰者， 继承 InputStream
+                （2）DataInputStream是一个装饰器实现， 继承FilterInputStream， FilterInputStream 继承 InputStream
+
+   （15）适配器模式： 结构型
+        定义： 适配改造不兼容的接口满足客户端使用需求
+        包括：
+            （1）类适配器模式： 适配器类继承被适配类
+            （2）对象适配器模式： 适配器类中包含被适配对象引用
+            （3）接口适配器模式：适配指定方法可用
+        应用场景：
+   （16）命令模式：Command Pattern， 行为型， 一种数据驱动的数据模式
+        主要作用：
+            将方法的请求者与方法的实现者(执行者)解耦， 请求包装成命令对象， 命令可以方便扩展
+
+        请求以命令的形式包裹在对象中，并传递给对象。调用对象寻找可以处理该命令的合适的对象，并把该命令传给相应的对象，该对象执行命令。
+
+        方便实现 Undo 和 Redo 操作（适合命令模式）？命令模式可以与备忘录模式结合
+
+        主要角色：
+            （1）请求者/调用着： 持有命令对象（可以多个）， 触发命令执行
+            （2）命令抽象： 命令中定义执行的方法
+            （3）命令具体： 实现执行方法，持有接收者，通过调用接收者的功能来完成命令要执行的操作。
+            （4）接受者/执行者： 命令的真正执行者， 任何对象都可以成为命令的执行者
+
+
+        缺点：
+            可能产生大量具体命令类。因为对每一个具体操作都需要设计一个具体命令类，这将增加系统的复杂性
+
+        应用场景：
+            （1）JDK中的Runnable就是一个典型的命令抽象， 实现接口run方法的类是命令具体， 线程Thread是调用者， 包含命令对象（private Runnable target;）接受者由自己定义。
+
+   （17）状态模式：行为型
+        定义：对象在多种状态转换时，需要对外输出不同的行为, 将不同状态下的行为封装在状态对象中，从而实现这种对应转换
+        主要角色：
+            （1）状态抽象： 提供状态行为方法
+            （2）具体状态： 实现不同状态实现对应的行为方法
+            （3）上下文： 即状态维护和的地方
+
+   （18）策略模式：行为型
+        实现某一个功能存在多种算法或者策略， 根据环境或者条件的不同选择不同的算法或者策略来完成该功能
+        作用： 定义算法簇， （这些策略可以相互替代）， 算法的变化独立于用户， 算法的实现和使用分开，而其避免了使用多重条件判断
+        主要角色：
+            （1）策略抽象： 不同具体算法实现实现策略方法
+        缺点： 客户端需要知道所有的策略，并自行决定使用那个策略
+
+        应用场景：
+            （1） jdk中的Comparator接口就可以认为是一个策略抽象， 可以自己实现
+
+   （19）备忘录模式：行为型
+        保存对象的某个状态或数据，以便在未来需要的时候进行数据的恢复
+
+   (20)中介者模式
+
+   （21）解释器模型
+
+   （22） 责任链模型 行为型： 要么自己处理， 要么下一对象处理
+
+        定义： 为请求创建了一个接收者对象的链，如果一个对象不能处理该请求，那么它会把相同的请求传给下一个接收者，依此类推。
+        主要角色：
+            （1）处理器抽象： 包含一个处理器对象引用（即本处理器不能处理时交给的下一个处理器）和 一个抽象的处理放方法
+            （2）处理器具体
+            （3）处理请求对象
+        要求， 这些处理器之间没有顺序要求， 总有一个能够处理不会出现死循环即可，
+        特点：
+            增加了系统的可扩展性， 可以更加灵活的修改处理责任流程（增加或者删除）
+        问题：
+            因为责任链的构造交由客户端实现， 如果错误会导致循环的问题
+        应用场景：
+            （1）  SpringMVC 的HandleExceptionChain
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
