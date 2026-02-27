@@ -3,3 +3,64 @@ AOP： AOP是一种面向切面的编程思想， 关注的通用业务逻辑和
       通过@Aspect、@Pointcut、@Around 等注解来封装了扫描注解、创建代理对象、拦截方法、插入增强逻辑” 等细节
 注解：比如像@Transational @Async @Cacheable等逻辑增强的注解就是基于代理模式实现的（直接使用AOP），
     注意：@Async不能同类调用， 因为不走代理就无法异步了；同时类方法上需要加上@EnableAsync注解；
+
+AOP代码解析：基于动态代理的切面编程框架
+    （1）核心流程：切面解析 -> 生成代理 -> 方法拦截 -> 增强执行
+            容器启动时，Spring 会扫描所有标注 @Aspect 的类，解析其中的 @Pointcut、@Around、@Before 等注解，生成 “切面元数据”（Advice/Pointcut/Advisor）
+            AnnotationAwareAspectJAutoProxyCreator 扫描切面、生成代理（其postProcessAfterInitialization方法中， 生成代理的环节是被代理对象初始化后而不是实例化的时候）
+            AspectJAnnotationBeanPostProcessor 解析 @Aspect 注解，提取切入点和增强逻辑， 生成 advisor对象；(advisor 是 Pointcut（切入点）和 Advice（增强）的组合，是 Spring AOP 中 “切面” 的最小执行单元。)
+
+            // 创建代理的核心逻辑：选择 JDK/CGLIB 代理
+            protected Object createProxy(Class<?> beanClass, @Nullable String beanName,
+                                         @Nullable Object[] specificInterceptors, TargetSource targetSource) {
+                // 1. 获取代理工厂
+                ProxyFactory proxyFactory = new ProxyFactory();
+                // 2. 设置目标对象
+                proxyFactory.setTargetSource(targetSource);
+                // 3. 添加增强逻辑（Advisor）
+                proxyFactory.addAdvisors(advisors);
+                // 4. 选择代理类型（JDK/CGLIB）
+                proxyFactory.setProxyTargetClass(this.proxyTargetClass);
+                // 5. 创建并返回代理对象
+                return proxyFactory.getProxy(getProxyClassLoader());
+            }
+
+            备注： 如果被代理类实现了接口，则默认使用 JDK 动态代理；无接口则用 CGLIB；
+                JDK动态代理， 要求代理类实现而非继承被代理类的所有方法， 所以需要被代理方法是接口方法！
+                而Cglib 底层通过 修改字节码（ASM 框架）生成子类，重写目标类的方法， 是继承所以不需要接口方法， 但是final类和方法不行（不能被继承）
+                强制 CGLIB：设置 proxyTargetClass=true（如 @EnableAspectJAutoProxy(proxyTargetClass = true)）；
+                // 方式1：@EnableAspectJAutoProxy 注解
+                @Configuration
+                @EnableAspectJAutoProxy(proxyTargetClass = true) // proxyTargetClass=true 强制CGLIB
+                public class AopConfig {
+                }
+
+                AOP仅支持方法连接点（jointPoint, 其他连接点包括字段、构造器等）
+
+                JDK动态代理请求原方法基于反射， 拦截器链（Interceptor Chain）按顺序执行，比如 @Before → 原方法 → @After → @AfterReturning/@AfterThrowing；
+                cGlib只有生成代理子类的时候用到反射后续请求原方法不需要再用反射了
+                但是： JDK8 对 Method.invoke() 做了 “反射方法句柄（MethodHandle）” 优化，大幅降低了反射开销，所以现在 JDK 代理和 CGLIB 代理的性能差距极小（微秒级），日常开发无需纠结；
+                如果是@Around则比较灵活， 可以控制是否执行原方法以及时机
+    （2）Spring AOP 与 AspectJ 的区别？
+            Spring AOP：基于动态代理，运行时织入，只支持方法级别的切面，轻量级；
+            AspectJ：基于字节码修改（编译期 / 类加载期织入），支持字段 / 方法 / 构造器等多维度切面，功能更强，但重量级；
+            Spring AOP 兼容 AspectJ 的注解（@Aspect/@Pointcut），但底层仍是动态代理。
+    （3）字节码增强的应用场景：
+        Spring Boot 的 DevTools（热部署）： 无需重启jVM
+        Spring AOP 的 CGLIB 代理
+        MyBatis 的 Mapper 动态代理（Javassist）、Hibernate 的延迟加载（Lazy Load）
+        备注： MyBatis使用JDK动态带来做代理拦截骨架，Javassist来为具体方法生成字节码 为了规避 Method.invoke() 的反射开销，会通过 Javassist（字节码增强）为每个 Mapper 方法生成原生调用的字节码，而非用反射执行 JDBC 操作。
+        SkyWalking（分布式链路追踪）:无需修改业务代码，只需在启动时挂载 SkyWalking 代理，它会通过字节码增强，在所有方法的入口 / 出口插入 “埋点代码”； 这是典型的 “无侵入式增强”，完全靠字节码修改实现。
+        Dubbo 的服务代理： Dubbo 作为 RPC 框架，为服务提供者 / 消费者生成代理类时，优先用字节码增强（Javassist）而非纯反射：
+        Lombok（代码简化工具）： @Data、@Getter、@Setter 注解，Lombok 不是在运行时生效，而是在编译期通过字节码增强实现
+    （4）字节码增强的核心价值：
+        无侵入式增强：不用修改业务代码，就能给类 / 方法加逻辑（监控、日志、事务）；
+        高性能：规避反射的运行时开销，生成原生调用的字节码；
+        动态性：运行时可修改类行为（如 Arthas 监控、Spring 热部署）。
+    （5) Javassist    vs	CGLIB（Code Generation Library）
+        底层实现	        提供高层 API（类 Java 语法），底层封装了 ASM	        直接基于 ASM 框架操作字节码（底层 API）
+        使用门槛	        低（无需懂字节码指令，写普通 Java 代码即可）	            高（需了解字节码指令、类结构）
+        性能	        生成字节码慢（高层封装有开销），执行速度接近 CGLIB	    生成字节码快（直接操作 ASM），执行速度略优
+        核心优势	        易用性（快速上手，开发效率高）	                        高性能（底层操作，适合框架底层）
+        典型使用者	    MyBatis、Hibernate（部分模块）	                    Spring AOP、Dubbo、Guice
+
