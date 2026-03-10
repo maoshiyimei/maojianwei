@@ -1,0 +1,259 @@
+方法回调：
+    核心目标： 主方法执行过程中将部分可变的逻辑拆分出来， 降低代码的耦合度， 提升代码后续的扩展性；
+    设计本质： 将回调方法（回调对象）传入主方法， 回调对象中有回调方法的实现逻辑；
+    实现手段：
+        （1）回调方法可以是接口实现类： 一对一简单实现
+            // 1. 定义回调接口（约定回调方法）
+            interface DownloadCallback {
+                void onSuccess(String filePath); // 成功回调
+                void onFailure(String errorMsg); // 失败回调
+            }
+
+            // 2. 主逻辑类（下载服务）
+            class DownloadService {
+                // 主方法：接收回调对象，执行下载后调用回调
+                public void downloadFile(String url, DownloadCallback callback) {
+                    try {
+                        // 模拟下载逻辑（固定核心逻辑）
+                        System.out.println("开始下载：" + url);
+                        Thread.sleep(500); // 模拟耗时
+                        String filePath = "/download/" + url.substring(url.lastIndexOf("/"));
+
+                        // 调用成功回调（核心：执行主方法后调用回调对象的方法）
+                        if (callback != null) {
+                            callback.onSuccess(filePath);
+                        }
+                    } catch (Exception e) {
+                        // 调用失败回调
+                        if (callback != null) {
+                            callback.onFailure(e.getMessage());
+                        }
+                    }
+                }
+            }
+
+            // 3. 测试
+            public class InterfaceCallbackDemo {
+                public static void main(String[] args) {
+                    DownloadService service = new DownloadService();
+
+                    // 调用主方法，传入回调实现（匿名内部类）
+                    service.downloadFile("https://example.com/test.txt", new DownloadCallback() {
+                        @Override
+                        public void onSuccess(String filePath) {
+                            System.out.println("回调执行：文件下载成功，路径：" + filePath);
+                        }
+
+                        @Override
+                        public void onFailure(String errorMsg) {
+                            System.out.println("回调执行：文件下载失败，原因：" + errorMsg);
+                        }
+                    });
+                }
+            }
+        （2）回调对象是基于抽象类的钩子回调（带默认实现，灵活扩展）
+            // 1. 定义带钩子的抽象回调类
+            abstract class HookDownloadCallback {
+                // 核心回调：必须实现（无默认）
+                public abstract void onSuccess(String filePath);
+
+                // 钩子方法1：可选实现（默认空）
+                public void onBeforeDownload(String url) {}
+
+                // 钩子方法2：可选实现（默认失败处理）
+                public void onFailure(String errorMsg) {
+                    System.out.println("默认失败处理：" + errorMsg);
+                }
+            }
+
+            // 2. 主逻辑类（适配抽象类）
+            class HookDownloadService {
+                public void downloadFile(String url, HookDownloadCallback callback) {
+                    try {
+                        // 调用前置钩子
+                        if (callback != null) {
+                            callback.onBeforeDownload(url);
+                        }
+
+                        // 模拟下载
+                        System.out.println("开始下载：" + url);
+                        Thread.sleep(500);
+                        String filePath = "/download/" + url.substring(url.lastIndexOf("/"));
+
+                        // 调用成功回调
+                        if (callback != null) {
+                            callback.onSuccess(filePath);
+                        }
+                    } catch (Exception e) {
+                        if (callback != null) {
+                            callback.onFailure(e.getMessage());
+                        }
+                    }
+                }
+            }
+
+            // 3. 测试
+            public class HookCallbackDemo {
+                public static void main(String[] args) {
+                    HookDownloadService service = new HookDownloadService();
+
+                    // 只需重写关心的方法，其他用默认
+                    service.downloadFile("https://example.com/data.zip", new HookDownloadCallback() {
+                        @Override
+                        public void onSuccess(String filePath) {
+                            System.out.println("回调执行：压缩包下载成功，路径：" + filePath);
+                        }
+
+                        // 只定制前置钩子，失败用默认
+                        @Override
+                        public void onBeforeDownload(String url) {
+                            System.out.println("前置钩子：校验下载链接合法性 → " + url);
+                        }
+                    });
+                }
+            }
+        （3）基于 Lambda 的简化回调（Java8+，函数式接口， 少代码）
+            // 1. 定义函数式回调接口（@FunctionalInterface标记）
+            @FunctionalInterface
+            interface SimpleDownloadCallback {
+                // 只有一个抽象方法：整合成功/失败
+                void onComplete(String filePath, String errorMsg);
+            }
+
+            // 2. 主逻辑类
+            class LambdaDownloadService {
+                public void downloadFile(String url, SimpleDownloadCallback callback) {
+                    try {
+                        System.out.println("开始下载：" + url);
+                        Thread.sleep(500);
+                        String filePath = "/download/" + url.substring(url.lastIndexOf("/"));
+                        callback.onComplete(filePath, null); // 成功：errorMsg为null
+                    } catch (Exception e) {
+                        callback.onComplete(null, e.getMessage()); // 失败：filePath为null
+                    }
+                }
+            }
+
+            // 3. 测试
+            public class LambdaCallbackDemo {
+                public static void main(String[] args) {
+                    LambdaDownloadService service = new LambdaDownloadService();
+
+                    // Lambda简化回调（一行搞定）
+                    service.downloadFile("https://example.com/image.jpg", (filePath, errorMsg) -> {
+                        if (errorMsg == null) {
+                            System.out.println("Lambda回调：图片下载成功，路径：" + filePath);
+                        } else {
+                            System.out.println("Lambda回调：图片下载失败，原因：" + errorMsg);
+                        }
+                    });
+                }
+            }
+        （4）发布订阅模式（一对多）
+            import java.util.ArrayList;
+            import java.util.List;
+
+            // 1. 定义事件载体
+            class DownloadEvent {
+                private String url;
+                private String filePath;
+                private boolean success;
+
+                public DownloadEvent(String url, String filePath, boolean success) {
+                    this.url = url;
+                    this.filePath = filePath;
+                    this.success = success;
+                }
+
+                // getter
+                public String getUrl() { return url; }
+                public String getFilePath() { return filePath; }
+                public boolean isSuccess() { return success; }
+            }
+
+            // 2. 定义订阅者接口
+            interface DownloadSubscriber {
+                void onDownloadEvent(DownloadEvent event);
+                String getName();
+            }
+
+            // 3. 具体订阅者1：日志记录
+            class LogSubscriber implements DownloadSubscriber {
+                @Override
+                public void onDownloadEvent(DownloadEvent event) {
+                    System.out.println("【" + getName() + "】" + (event.isSuccess() ? "成功" : "失败") +
+                            "：" + event.getUrl() + " → " + event.getFilePath());
+                }
+
+                @Override
+                public String getName() { return "日志记录订阅者"; }
+            }
+
+            // 具体订阅者2：邮件通知
+            class EmailSubscriber implements DownloadSubscriber {
+                @Override
+                public void onDownloadEvent(DownloadEvent event) {
+                    if (event.isSuccess()) {
+                        System.out.println("【" + getName() + "】发送邮件：文件" + event.getFilePath() + "下载成功");
+                    }
+                }
+
+                @Override
+                public String getName() { return "邮件通知订阅者"; }
+            }
+
+            // 4. 发布者（主逻辑类）
+            class DownloadPublisher {
+                // 维护订阅者列表
+                private List<DownloadSubscriber> subscribers = new ArrayList<>();
+
+                // 注册订阅者
+                public void addSubscriber(DownloadSubscriber subscriber) {
+                    subscribers.add(subscriber);
+                }
+
+                // 发布事件（触发所有订阅者回调）
+                public void publishEvent(DownloadEvent event) {
+                    System.out.println("\n发布者：开始通知所有订阅者");
+                    for (DownloadSubscriber subscriber : subscribers) {
+                        subscriber.onDownloadEvent(event);
+                    }
+                }
+
+                // 主逻辑：下载文件并发布事件
+                public void downloadAndPublish(String url) {
+                    try {
+                        System.out.println("发布者：开始下载文件 → " + url);
+                        Thread.sleep(500);
+                        String filePath = "/download/" + url.substring(url.lastIndexOf("/"));
+                        // 发布成功事件
+                        publishEvent(new DownloadEvent(url, filePath, true));
+                    } catch (Exception e) {
+                        // 发布失败事件
+                        publishEvent(new DownloadEvent(url, null, false));
+                    }
+                }
+            }
+
+            // 5. 测试
+            public class PubSubCallbackDemo {
+                public static void main(String[] args) {
+                    DownloadPublisher publisher = new DownloadPublisher();
+
+                    // 注册多个订阅者
+                    publisher.addSubscriber(new LogSubscriber());
+                    publisher.addSubscriber(new EmailSubscriber());
+
+                    // 执行主逻辑，触发批量回调
+                    publisher.downloadAndPublish("https://example.com/report.pdf");
+                }
+            }
+
+钩子：是框架 / 父类预先在流程中预留的 “可插拔扩展点”：
+    简单说明：框架 / 父类已经把核心流程写死（比如 “下载文件” 的步骤：校验→下载→完成）；在流程的关键节点（比如 “下载前”、“下载后”）留一个 “钩子方法”，这个方法有默认实现（通常是空逻辑或基础逻辑）；
+    流程扩展点
+    和模板的区别：纯模板方法要求子类 “必须填所有空”，带钩子的模板方法允许子类 “按需填空”；
+
+
+
+
